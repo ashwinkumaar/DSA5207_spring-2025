@@ -57,7 +57,7 @@ def compute_counts(train_data_parsed):
   return word_tag_counts, tag_counts, tag_tag_counts
 
 
-def compute_emission_probabilities(word_tag_counts, tag_counts):
+def compute_emission_probs(word_tag_counts, tag_counts):
   """Computes emission probabilities P(word|tag), excluding '###' tag."""
   emission_probs = {}
 
@@ -70,7 +70,7 @@ def compute_emission_probabilities(word_tag_counts, tag_counts):
   return emission_probs
 
 
-def compute_transition_probabilities(tag_tag_counts, tag_counts):
+def compute_transition_probs(tag_tag_counts, tag_counts):
   """Computes transition probabilities P(tag2|tag1). Includes transitions from '###'."""
   transition_probs = {}
 
@@ -84,56 +84,63 @@ def compute_transition_probabilities(tag_tag_counts, tag_counts):
   return transition_probs
 
 
+def viterbi_sentence(sentence_words, transition_probs, emission_probs, possible_tags):
+  """Viterbi decoding for a single sentence (list of words, no ###)."""
+  n = len(sentence_words)
+  V = [{} for _ in range(n)]
+  backpointer = [{} for _ in range(n)]
 
-def viterbi(words, tags, emission_probs, transition_probs):
-    """Implements the Viterbi algorithm to find the most likely tag sequence."""
-    n = len(words)
-    viterbi_table = {}
-    backpointers = {}
+  for i, word in enumerate(sentence_words):
+    for tag in possible_tags:
+      emission_prob = emission_probs.get(word, {}).get(tag, 1e-10)
 
-    # Initialization for the first word
-    viterbi_table[0] = {}
-    backpointers[0] = {}
-    for tag in tags:
-        emission_prob = emission_probs.get(words[0], {}).get(tag, 0) # Handle unseen words
-        transition_from_start = transition_probs.get('###', {}).get(tag, 0)
-        viterbi_table[0][tag] = transition_from_start + emission_prob
-        backpointers[0][tag] = '###'
+      if i == 0:
+        trans_prob = transition_probs.get('###', {}).get(tag, 1e-10)
+        V[i][tag] = trans_prob * emission_prob
+        backpointer[i][tag] = '###'
+      else:
+        best_prev_tag = None
+        best_prob = -1
 
-    # Recursion for subsequent words
-    for t in range(1, n):
-        viterbi_table[t] = {}
-        backpointers[t] = {}
-        for current_tag in tags:
-            max_prob = 0
-            best_prev_tag = None
-            emission_prob = emission_probs.get(words[t], {}).get(current_tag, 0) # Handle unseen words
-            for prev_tag in tags:
-                transition_prob = transition_probs.get(prev_tag, {}).get(current_tag, 0)
-                prob = viterbi_table[t - 1].get(prev_tag, 0) * transition_prob * emission_prob
-                if prob > max_prob:
-                    max_prob = prob
-                    best_prev_tag = prev_tag
-            viterbi_table[t][current_tag] = max_prob
-            backpointers[t][current_tag] = best_prev_tag
+        for prev_tag in possible_tags:
+          trans_prob = transition_probs.get(prev_tag, {}).get(tag, 1e-10)
+          prob = V[i-1][prev_tag] * trans_prob * emission_prob
+          if prob > best_prob:
+            best_prob = prob
+            best_prev_tag = prev_tag
 
-    # Termination
-    best_path_prob = 0
-    last_tag = None
-    for tag in tags:
-        transition_to_end = transition_probs.get(tag, {}).get('###', 0)
-        prob = viterbi_table[n - 1].get(tag, 0) * transition_to_end
-        if prob > best_path_prob:
-            best_path_prob = prob
-            last_tag = tag
+        V[i][tag] = best_prob
+        backpointer[i][tag] = best_prev_tag
 
-    # Backtrack to find the best tag sequence
-    best_path = [last_tag]
-    for t in range(n - 1, 0, -1):
-        last_tag = backpointers[t].get(last_tag)
-        best_path.insert(0, last_tag)
+  # Backtrace
+  last_tag = max(V[-1], key=V[-1].get)
+  tags = [last_tag]
+  for i in range(n - 1, 0, -1):
+    tags.insert(0, backpointer[i][tags[0]])
 
-    return best_path
+  return tags
+
+
+def viterbi_full(test_words, transition_probs, emission_probs):
+  possible_tags = [t for t in set(transition_probs) if t != '###']
+  output_tags = []
+
+  sentence = []
+  for word in test_words:
+    if word == '###':
+      if sentence:
+        tags = viterbi_sentence(sentence, transition_probs, emission_probs, possible_tags)
+        output_tags.extend(tags)
+        sentence = []
+      output_tags.append('###')  # preserve boundary
+    else:
+      sentence.append(word)
+
+  if sentence:
+    tags = viterbi_sentence(sentence, transition_probs, emission_probs, possible_tags)
+    output_tags.extend(tags)
+
+  return output_tags
 
 
 def evaluate(test_data_parsed, predicted_tags):
@@ -168,11 +175,11 @@ def train_and_test(train_data_lines, dev_data_lines=None, test_data_lines=None):
     print(f"tags: {tags}")
 
     print("Computing emission probabilities...")
-    emission_probabilities = compute_emission_probabilities(word_tag_counts, tag_counts)
-    print(f"emission probabilities P(word|tag): {emission_probabilities}")
+    emission_probs = compute_emission_probs(word_tag_counts, tag_counts)
+    print(f"emission probabilities P(word|tag): {emission_probs}")
     print("Computing transition probabilities...")
-    transition_probabilities = compute_transition_probabilities(tag_tag_counts, tag_counts)
-    print(f"transition probabilities P(tag2|tag1): {transition_probabilities}")
+    transition_probs = compute_transition_probs(tag_tag_counts, tag_counts)
+    print(f"transition probabilities P(tag2|tag1): {transition_probs}")
 
     if test_data_lines:
         print("\nParsing test data...")
@@ -181,7 +188,9 @@ def train_and_test(train_data_lines, dev_data_lines=None, test_data_lines=None):
 
         print("Running Viterbi on test data...")
         test_words = [word for word, tag in test_data_parsed]
-        predicted_tags = viterbi(test_words, tags, emission_probabilities, transition_probabilities)
+        print(f"Test words: {test_words}")
+        predicted_tags = viterbi_full(test_words, transition_probs, emission_probs)
+        print(f"Predicted tags: {predicted_tags}")
 
         print("Evaluating on test data...")
         accuracy = evaluate(test_data_parsed, predicted_tags)
@@ -208,8 +217,10 @@ def main():
     #     print("Invalid arguments. Use -train and -test")
     #     return
 
-    train_file = os.path.join('data', train_base)
-    test_file = os.path.join('data', test_base)
+    path = "F:\\OneDrive - Ashwin\\OneDrive\\NUS\\Masters\\Semester 4\\DSA5207 - Text Processing & Interpretation with Machine Learning\\Assignments\\Assignment-3\\code\\data"
+
+    train_file = os.path.join(path, train_base)
+    test_file = os.path.join(path, test_base)
 
     # print the arguments to verify
     print(f"Training file: {train_file}")

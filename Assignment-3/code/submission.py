@@ -672,22 +672,20 @@ def read_data_file(filename):
     try:
         with open(filename, "r") as f:
             data = f.read().splitlines()
-        print(f"Successfully read {filename}.")
+        # print(f"Successfully read {filename}.")
         return data
     except FileNotFoundError:
-        print(f"Error: The file '{filename}' was not found.")
-        return None
+        raise ValueError(f"Error: The file '{filename}' was not found.")
     except Exception as e:
-        print(f"An error occurred while reading '{filename}': {e}")
-        return None
+        raise ValueError(f"An error occurred while reading '{filename}': {e}")
 
 
-def parse_data(data):
+def parse_data(data, is_test=False):
     """Parses data where each line is in the format 'x/y'."""
     word_tag_pairs = []
     for line in data:
         parts = line.strip().split("/")
-        if len(parts) == 2:
+        if len(parts) == 2 and not is_test:
             word_tag_pairs.append((parts[0], parts[1]))
         else:
             word_tag_pairs.append(parts[0])
@@ -727,6 +725,13 @@ def train_and_test(
     """
     Performs training and testing using the provided data lines.
     """
+    if isinstance(train_data_lines, str):
+        train_data_lines = read_data_file(train_data_lines)
+    if isinstance(dev_data_lines, str):
+        dev_data_lines = read_data_file(dev_data_lines)
+    if isinstance(test_data_lines, str):
+        test_data_lines = read_data_file(test_data_lines)
+
     train_data_parsed = parse_data(train_data_lines)
     dev_data_parsed = parse_data(dev_data_lines)
 
@@ -841,7 +846,7 @@ def train_and_test(
     best_model.fit()
     # print(best_model.fit_predict_evaluate(test_words=dev_words, true_tags=dev_tags))
 
-    test_words = parse_data(test_data_lines)
+    test_words = parse_data(test_data_lines, is_test=True)
     test_predictions = best_model.predict(test_words)
 
     # Open the file for writing
@@ -884,10 +889,15 @@ def main():
     test_data = read_data_file(test_file)
 
     if (train_base == "ictrain" and test_base == "ictest") or (train_base == "entrain"):
+        # train_and_test(
+        #     train_data_lines=train_data,
+        #     dev_data_lines=dev_data,
+        #     test_data_lines=test_data,
+        # )
         train_and_test(
-            train_data_lines=train_data,
-            dev_data_lines=dev_data,
-            test_data_lines=test_data,
+            train_data_lines="data\entrain",
+            dev_data_lines="data\endev",
+            test_data_lines="data\entest",
         )
     else:
         raise ValueError("Error: Could not load training and/or testing data. Exiting.")

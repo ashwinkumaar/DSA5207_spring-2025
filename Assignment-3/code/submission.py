@@ -5,6 +5,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from enum import Enum
+import argparse
 
 import numpy as np
 
@@ -130,6 +131,8 @@ class Model(ABC):
 
         return overall_accuracy, known_word_accuracy, novel_word_accuracy
 
+
+
     @abstractmethod
     def fit(self, *args):
         """
@@ -203,6 +206,7 @@ class HMM_Model(Model):
             )
             self.known_words = known_words
         super().__init__(train_data)
+        self.rare_word_max_frequency = rare_word_max_frequency
         self.emission_smoothing_method = emission_smoothing_method
         self.transition_smoothing_method = transition_smoothing_method
         self.lambda_value = lambda_value
@@ -714,22 +718,31 @@ def print_results(results):
 
 
 def train_and_test(
-    train_data_lines,
-    dev_data_lines,
-    test_data_lines,
+    train_file_name,
+    dev_file_name,
+    test_file_name,
 ):
     """
     Performs training and testing using the provided data lines.
     """
-    if isinstance(train_data_lines, str):
-        train_data_lines = read_data_file(train_data_lines)
-    if isinstance(dev_data_lines, str):
-        dev_data_lines = read_data_file(dev_data_lines)
-    if isinstance(test_data_lines, str):
-        test_data_lines = read_data_file(test_data_lines)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.join(base_dir, 'data')
+
+
+    train_dir = os.path.join(data_dir, train_file_name)
+    train_data_lines = read_data_file(train_dir)
+
+    dev_data_lines = None
+    if dev_file_name:
+        dev_dir = os.path.join(data_dir, dev_file_name)
+        dev_data_lines = read_data_file(dev_dir)
+
+    test_dir = os.path.join(data_dir, test_file_name)
+    test_data_lines = read_data_file(test_dir)
 
     train_data_parsed = parse_data(train_data_lines)
-    dev_data_parsed = parse_data(dev_data_lines)
+
+    dev_data_parsed = parse_data(dev_data_lines) if dev_data_lines else [(None, None)]
 
     dev_words = [word for word, _ in dev_data_parsed]
     dev_tags = [tag for _, tag in dev_data_parsed]
@@ -825,11 +838,11 @@ def train_and_test(
 
         print_results(results)
 
-    if len(dev_data_parsed) > 0:
+    if len(dev_data_parsed) > 0 and dev_data_parsed[0][0] is not None:
         train_data_parsed = train_data_parsed + dev_data_parsed
 
     if best_model is None:
-        best_model = model(
+        best_model_final = model(
             train_data=train_data_parsed,
             emission_smoothing_method=None,
             transition_smoothing_method=None,
@@ -837,20 +850,33 @@ def train_and_test(
         )
     else:
         # Train the best model on the combined train and dev data
-        best_model.train_data = train_data_parsed
+        best_model_final = model(
+            train_data=train_data_parsed,
+            emission_smoothing_method=best_model.emission_smoothing_method,
+            transition_smoothing_method=best_model.transition_smoothing_method,
+            lambda_value=best_model.lambda_value,
+            rare_word_max_frequency=best_model.rare_word_max_frequency
+        )
 
-    best_model.fit()
+    best_model_final.fit()
     # print(best_model.fit_predict_evaluate(test_words=dev_words, true_tags=dev_tags))
 
     test_words = parse_data(test_data_lines, is_test=True)
-    test_predictions = best_model.predict(test_words)
+    test_predictions = best_model_final.predict(test_words)
 
     # Open the file for writing
-    with open("output.txt", "w") as file:
+    with open(os.path.join(base_dir, 'output.txt'), "w") as file:
         # Iterate over each sentence in the test data
         for word, tag in zip(test_words, test_predictions):
             # Format as word/tag
             file.write(f"{word}/{tag}\n")
+
+    # from eval import eval as eval_fn
+    # args = argparse.Namespace()
+    # args.gold = os.path.join(data_dir, test_file_name)
+    # args.pred = os.path.join(base_dir, 'output.txt')
+    # acc = eval_fn(args)  # Call eval function here
+    # return acc
 
 
 def main():
@@ -877,8 +903,8 @@ def main():
     test_file = os.path.join(path, test_base)
 
     # print the arguments to verify
-    print(f"Training file: {train_file}")
-    print(f"Test file: {test_file}")
+    # print(f"Training file: {train_file}")
+    # print(f"Test file: {test_file}")
 
     train_data = read_data_file(train_file)
     dev_data = read_data_file(dev_file)
@@ -890,10 +916,12 @@ def main():
         #     dev_data_lines=dev_data,
         #     test_data_lines=test_data,
         # )
+
+        dev_file = "endev"
         train_and_test(
-            train_data_lines="data\entrain",
-            dev_data_lines="data\endev",
-            test_data_lines="data\entest",
+            train_file_name=train_base,
+            dev_file_name=dev_file,
+            test_file_name=test_base,
         )
     else:
         raise ValueError("Error: Could not load training and/or testing data. Exiting.")

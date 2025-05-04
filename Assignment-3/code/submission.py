@@ -16,18 +16,6 @@ def log2(value):
     return math.log2(value) if value > 0 else LOG_PROB_OF_ZERO
 
 
-class SmoothingMethod(str, Enum):
-    """Smoothing methods for emission and transition probabiities"""
-
-    LAPLACE = "laplace"
-    WRITTEN_BELL = "witten_bell"
-    GOOD_TURING = "good_turing"
-    INTERPOLATED = "interpolated"
-
-
-RARE_SYMBOL = "_RARE_"
-
-
 def subcategorize(word):
     # Check if word is a tuple and extract the first element
     if isinstance(word, tuple):
@@ -67,6 +55,14 @@ def subcategorize(word):
         return "_SHORT_"
     else:
         return RARE_SYMBOL
+
+class SmoothingMethod(str, Enum):
+    """Smoothing methods for emission and transition probabiities"""
+
+    LAPLACE = "laplace"
+    WRITTEN_BELL = "witten_bell"
+    GOOD_TURING = "good_turing"
+    INTERPOLATED = "interpolated"
 
 
 class Model(ABC):

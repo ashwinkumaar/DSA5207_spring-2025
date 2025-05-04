@@ -511,12 +511,12 @@ class HMM_Model(Model):
 
         if self.n_lines_debug_print:
             print(
-                f"emission probabilities P(word|tag): {{ {', '.join(f'{key}: {value}' for key, value in list(
-                self.emission_probs.items())[:self.n_lines_debug_print])} }}"
+                f"""emission probabilities P(word|tag): {{ {', '.join(f'{key}: {value}' for key, value in list(
+                self.emission_probs.items())[:self.n_lines_debug_print])} }}"""
             )
             print(
-                f"transition probabilities P(tag2|tag1): {{ {', '.join(f'{key}: {value}' for key, value in list(
-                self.transition_probs.items())[:self.n_lines_debug_print])} }}"
+                f"""transition probabilities P(tag2|tag1): {{ {', '.join(f'{key}: {value}' for key, value in list(
+                self.transition_probs.items())[:self.n_lines_debug_print])} }}"""
             )
 
     def predict(self, test_words, *args):

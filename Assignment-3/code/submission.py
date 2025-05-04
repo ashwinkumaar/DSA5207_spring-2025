@@ -1,10 +1,19 @@
+import math
 import os
+import re
 import sys
 from abc import ABC, abstractmethod
-from collections import Counter
+from collections import Counter, defaultdict
 from enum import Enum
 
 import numpy as np
+
+RARE_SYMBOL = "_RARE_"
+LOG_PROB_OF_ZERO = -1000
+
+
+def log2(value):
+    return math.log2(value) if value > 0 else LOG_PROB_OF_ZERO
 
 
 class SmoothingMethod(str, Enum):
@@ -14,6 +23,50 @@ class SmoothingMethod(str, Enum):
     WRITTEN_BELL = "witten_bell"
     GOOD_TURING = "good_turing"
     INTERPOLATED = "interpolated"
+
+
+RARE_SYMBOL = "_RARE_"
+
+
+def subcategorize(word):
+    # Check if word is a tuple and extract the first element
+    if isinstance(word, tuple):
+        print(word)
+        word = word[0]
+
+    # Convert word to lowercase for consistency
+    word_lower = word.lower()
+
+    if re.search(r"[€£¥₹$]", word):
+        return "_CURRENCY_"
+    elif re.search(r"[+\-*/=<>]", word):
+        return "_SYMBOL_"
+    elif not re.search(r"\w", word):
+        return "_PUNCS_"
+    elif re.search(r"[A-Z]", word):
+        return "_CAPITAL_"
+    elif re.search(r"\d", word):
+        return "_CARDINAL_"
+    elif re.search(
+        r"(ion\b|ty\b|ics\b|ment\b|ence\b|ance\b|ness\b|ist\b|ism\b)", word_lower
+    ):
+        return "_NOUNLIKE_"
+    elif re.search(r"(ate\b|fy\b|ize\b|ing\b|ed\b|s\b|\ben|\bem)", word_lower):
+        return "_VERBLIKE_"
+    elif re.search(r"(\bun|\bin|ble\b|ry\b|ish\b|ious\b|ical\b|\bnon)", word_lower):
+        return "_ADJLIKE_"
+    elif re.search(r"(ly\b)", word_lower):
+        return "_ADVLIKE_"
+    elif re.search(r"(\bthe\b|\band\b|\bof\b|\bin\b|\bat\b)", word_lower):
+        return "_FUNCTION_"
+    elif re.search(r"(\bthere\b)", word_lower):
+        return "_EXISTENTIAL_"
+    elif re.search(r"(\buh\b|\boh\b|\bhey\b|\bhi\b)", word_lower):
+        return "_INTERJECTION_"
+    elif len(word) <= 3:
+        return "_SHORT_"
+    else:
+        return RARE_SYMBOL
 
 
 class Model(ABC):
@@ -105,7 +158,31 @@ class Model(ABC):
     def fit_predict_evaluate(self, true_tags, *args):
         """fit, predict and calculate accuracy"""
         predicted_tags = self.fit_predict(*args)
-        return self.calculate_accuracy(true_tags, predicted_tags)
+        return self.calculate_accuracy(true_tags, predicted_tags, None)
+
+    def calc_known(self, train_data, rare_word_max_freq):
+        known_words = set()
+        word_c = defaultdict(int)
+
+        for word, _ in train_data:
+            word_c[word] += 1
+
+        for word, count in word_c.items():
+            if count > rare_word_max_freq:
+                known_words.add(word)
+        return known_words
+
+    def replace_rare(self, train_data, rare_word_max_freq):
+        known_words = self.calc_known(train_data, rare_word_max_freq)
+        output = []
+
+        for word, tag in train_data:
+            if word not in known_words:
+                word = subcategorize(word)
+
+            output.append((word, tag))
+
+        return output, known_words
 
 
 class HMM_Model(Model):
@@ -120,7 +197,15 @@ class HMM_Model(Model):
         transition_smoothing_method: SmoothingMethod = None,
         lambda_value: float = 0.7,
         n_lines_debug_print: int = None,
+        rare_word_max_frequency: int = 0,
     ):
+        replace_rare_words = False
+        if rare_word_max_frequency > 0:
+            replace_rare_words = True
+            train_data, known_words = self.replace_rare(
+                train_data, rare_word_max_frequency
+            )
+            self.known_words = known_words
         super().__init__(train_data)
         self.emission_smoothing_method = emission_smoothing_method
         self.transition_smoothing_method = transition_smoothing_method
@@ -131,28 +216,30 @@ class HMM_Model(Model):
         self.vocabulary_size = len(set(word for word, _ in train_data))
         self.tags = sorted(self.tag_counts.keys())
         self.num_tags = len(self.tags)
+        self.replace_rare_words = replace_rare_words
 
         # Initialize attributes to None or a default value
         self.emission_probs = None
         self.transition_probs = None
 
         self.n_lines_debug_print = n_lines_debug_print
+
         if n_lines_debug_print:
-            print(f"Number of training word/tag pairs: {len(train_data)}")
-            print(
-                f"word_tag_counts: {{ {', '.join(f'{key}: {value}' for key, value in list(
-                self.word_tag_counts.items())[:n_lines_debug_print])} }}"
-            )
-            print(
-                f"tag_counts: {{ {', '.join(f'{key}: {value}' for key, value in list(
-                self.tag_counts.items())[:n_lines_debug_print])} }}"
-            )
-            print(
-                f"tag_tag_counts: {{ {', '.join(f'{key}: {value}' for key, value in list(
-                self.tag_tag_counts.items())[:n_lines_debug_print])} }}"
-            )
-            print(f"tags: {self.tags[:n_lines_debug_print]}")
-            print(f"vocabulary size: {self.vocabulary_size}")
+            self._debug_print_initial_counts()
+
+    def _debug_print_initial_counts(self):
+        print(f"Number of training word/tag pairs: {len(self.train_data)}")
+        print(f"word_tag_counts: {self._format_debug_output(self.word_tag_counts)}")
+        print(f"tag_counts: {self._format_debug_output(self.tag_counts)}")
+        print(f"tag_tag_counts: {self._format_debug_output(self.tag_tag_counts)}")
+        print(f"tags: {self.tags[:self.n_lines_debug_print]}")
+        print(f"vocabulary size: {self.vocabulary_size}")
+
+    def _format_debug_output(self, data):
+        return ", ".join(
+            f"{key}: {value}"
+            for key, value in list(data.items())[: self.n_lines_debug_print]
+        )
 
     def _compute_counts(self):
         """Computes word-tag and tag-tag counts with sentence boundary handling."""
@@ -189,7 +276,7 @@ class HMM_Model(Model):
         for word, tags in self.word_tag_counts.items():
             emission_probs[word] = {}
             for tag, count in tags.items():
-                emission_probs[word][tag] = (count + 1) / (
+                emission_probs[word][tag] = log2(count + 1) - log2(
                     self.tag_counts[tag] + self.vocabulary_size
                 )
         return emission_probs
@@ -202,7 +289,7 @@ class HMM_Model(Model):
             for tag, count in tags.items():
                 unique_words = len(self.word_tag_counts)
                 z = unique_words - len(tags)
-                emission_probs[word][tag] = count / (self.tag_counts[tag] + z)
+                emission_probs[word][tag] = log2(count) - log2(self.tag_counts[tag] + z)
         return emission_probs
 
     def _compute_good_turing_counts(self, counts):
@@ -215,7 +302,9 @@ class HMM_Model(Model):
         for count in counts.values():
             if count + 1 in freq_of_freqs:
                 adjusted_counts[count] = (
-                    (count + 1) * freq_of_freqs[count + 1] / freq_of_freqs[count]
+                    log2((count + 1))
+                    + log2(freq_of_freqs[count + 1])
+                    - log2(freq_of_freqs[count])
                 )
             else:
                 adjusted_counts[count] = count
@@ -228,8 +317,8 @@ class HMM_Model(Model):
             emission_probs[word] = {}
             adjusted_counts = self._compute_good_turing_counts(counts=tags)
             for tag, count in tags.items():
-                emission_probs[word][tag] = (
-                    adjusted_counts[count] / self.tag_counts[tag]
+                emission_probs[word][tag] = log2(adjusted_counts[count]) - log2(
+                    self.tag_counts[tag]
                 )
         return emission_probs
 
@@ -240,10 +329,10 @@ class HMM_Model(Model):
         for word, tags in self.word_tag_counts.items():
             emission_probs[word] = {}
             for tag, count in tags.items():
-                unigram_prob = self.tag_counts[tag] / total_words
-                emission_probs[word][tag] = (
-                    lambda_value * (count / self.tag_counts[tag])
-                    + (1 - lambda_value) * unigram_prob
+                unigram_prob = log2(self.tag_counts[tag]) - log2(total_words)
+                emission_probs[word][tag] = log2(
+                    (lambda_value * (2 ** (log2(count) - log2(self.tag_counts[tag]))))
+                    + ((1 - lambda_value) * (2**unigram_prob))
                 )
         return emission_probs
 
@@ -255,7 +344,7 @@ class HMM_Model(Model):
             emission_probs[word] = {}
             for tag, count in tags.items():
                 if tag != "###":  # Skip emission for sentence boundary tag
-                    emission_probs[word][tag] = count / self.tag_counts[tag]
+                    emission_probs[word][tag] = log2(count) - log2(self.tag_counts[tag])
 
         return emission_probs
 
@@ -285,7 +374,9 @@ class HMM_Model(Model):
 
             for next_tag in self.tag_counts:
                 count = next_tags.get(next_tag, 0)
-                transition_probs[prev_tag][next_tag] = (count + 1) / total_transitions
+                transition_probs[prev_tag][next_tag] = log2(count + 1) - log2(
+                    total_transitions
+                )
 
         return transition_probs
 
@@ -299,14 +390,12 @@ class HMM_Model(Model):
             total_transitions = sum(next_tags.values())
 
             for next_tag in self.tag_counts:
-                bigram_prob = (
-                    next_tags.get(next_tag, 0) / total_transitions
-                    if total_transitions > 0
-                    else 0
-                )
-                unigram_prob = self.tag_counts[next_tag] / total_tags
-                transition_probs[prev_tag][next_tag] = (
-                    lambda_value * bigram_prob + (1 - lambda_value) * unigram_prob
+                bigram_prob = log2(next_tags.get(next_tag, 0)) - log2(total_transitions)
+
+                unigram_prob = log2(self.tag_counts[next_tag]) - log2(total_tags)
+                transition_probs[prev_tag][next_tag] = log2(
+                    (lambda_value * (2**bigram_prob))
+                    + ((1 - lambda_value) * (2**unigram_prob))
                 )
 
             # for next_tag, count in next_tags.items():
@@ -327,7 +416,9 @@ class HMM_Model(Model):
             total_transitions = sum(next_tags.values())
 
             for next_tag, count in next_tags.items():
-                transition_probs[prev_tag][next_tag] = count / total_transitions
+                transition_probs[prev_tag][next_tag] = log2(count) - log2(
+                    total_transitions
+                )
 
         return transition_probs
 
@@ -352,19 +443,23 @@ class HMM_Model(Model):
 
         for i, word in enumerate(sentence_words):
             for tag in possible_tags:
-                emission_prob = emission_probs.get(word, {}).get(tag, 1e-10)
+                emission_prob = emission_probs.get(word, {}).get(tag, LOG_PROB_OF_ZERO)
 
                 if i == 0:
-                    trans_prob = transition_probs.get("###", {}).get(tag, 1e-10)
-                    V[i][tag] = trans_prob * emission_prob
+                    trans_prob = transition_probs.get("###", {}).get(
+                        tag, LOG_PROB_OF_ZERO
+                    )
+                    V[i][tag] = trans_prob + emission_prob
                     backpointer[i][tag] = "###"
                 else:
                     best_prev_tag = None
-                    best_prob = -1
+                    best_prob = float("-inf")
 
                     for prev_tag in possible_tags:
-                        trans_prob = transition_probs.get(prev_tag, {}).get(tag, 1e-10)
-                        prob = V[i - 1][prev_tag] * trans_prob * emission_prob
+                        trans_prob = transition_probs.get(prev_tag, {}).get(
+                            tag, LOG_PROB_OF_ZERO
+                        )
+                        prob = V[i - 1][prev_tag] + trans_prob + emission_prob
                         if prob > best_prob:
                             best_prob = prob
                             best_prev_tag = prev_tag
@@ -428,6 +523,15 @@ class HMM_Model(Model):
         if not self.emission_probs or not self.transition_probs:
             raise ValueError("Model not fit")
 
+        if self.replace_rare_words:
+            test_words_rare = []
+            for word in test_words:
+                if word not in self.known_words:
+                    word = subcategorize(word)
+                test_words_rare.append(word)
+
+            test_words = test_words_rare
+
         predicted_tags = self.viterbi_full(
             test_words, self.transition_probs, self.emission_probs
         )
@@ -462,31 +566,6 @@ class HMM_Model(Model):
             print(f"Novel word accuracy: {novel_word_accuracy * 100:.2f}%")
 
         return overall_accuracy, known_word_accuracy, novel_word_accuracy
-
-
-def read_data_file(filename):
-    """Reads data from a specified file and returns a list of lines."""
-    try:
-        with open(filename, "r") as f:
-            data = f.read().splitlines()
-        print(f"Successfully read {filename}.")
-        return data
-    except FileNotFoundError:
-        print(f"Error: The file '{filename}' was not found.")
-        return None
-    except Exception as e:
-        print(f"An error occurred while reading '{filename}': {e}")
-        return None
-
-
-def parse_data(data):
-    """Parses data where each line is in the format 'x/y'."""
-    word_tag_pairs = []
-    for line in data:
-        parts = line.strip().split("/")
-        if len(parts) == 2:
-            word_tag_pairs.append((parts[0], parts[1]))
-    return word_tag_pairs
 
 
 class HMM_Bigram_Model(HMM_Model):
@@ -588,108 +667,189 @@ class HMM_Bigram_Model(HMM_Model):
         return self._compute_bigram_probs_base()
 
 
-def train_and_test(
-    train_data_lines,
-    test_data_lines,
-    dev_data_lines=None,
-):
-    """
-    Performs training and testing using the provided data lines.
-    """
-    train_data_parsed = parse_data(train_data_lines)
-    test_data_parsed = parse_data(test_data_lines)
+def read_data_file(filename):
+    """Reads data from a specified file and returns a list of lines."""
+    try:
+        with open(filename, "r") as f:
+            data = f.read().splitlines()
+        print(f"Successfully read {filename}.")
+        return data
+    except FileNotFoundError:
+        print(f"Error: The file '{filename}' was not found.")
+        return None
+    except Exception as e:
+        print(f"An error occurred while reading '{filename}': {e}")
+        return None
 
-    test_words = [word for word, _ in test_data_parsed]
-    true_tags = [tag for _, tag in test_data_parsed]
 
-    model = HMM_Model
+def parse_data(data):
+    """Parses data where each line is in the format 'x/y'."""
+    word_tag_pairs = []
+    for line in data:
+        parts = line.strip().split("/")
+        if len(parts) == 2:
+            word_tag_pairs.append((parts[0], parts[1]))
+        else:
+            word_tag_pairs.append(parts[0])
+    return word_tag_pairs
 
-    # emission_smoothing_methods = list(SmoothingMethod) + [None]
-    emission_smoothing_methods = [SmoothingMethod.GOOD_TURING, None]
-    transition_smoothing_methods = [
-        SmoothingMethod.LAPLACE,
-        SmoothingMethod.INTERPOLATED,
-        None,
-    ]
-    # transition_smoothing_methods = [None]
-    # Different lambda values for interpolation
-    lambda_values = np.linspace(0.1, 0.9, 5).tolist()
-    results = []
 
-    for emission_smoothing in emission_smoothing_methods:
-        for transition_smoothing in transition_smoothing_methods:
-            if transition_smoothing == SmoothingMethod.INTERPOLATED:
-                for lambda_value in lambda_values:
-                    print(
-                        f"Emission Smoothing: {emission_smoothing}, Transition Smoothing: {transition_smoothing}, Lambda: {lambda_value}"
-                    )
-                    hmm_model = model(
-                        train_data=train_data_parsed,
-                        emission_smoothing_method=emission_smoothing,
-                        transition_smoothing_method=transition_smoothing,
-                        lambda_value=lambda_value,
-                    )
-                    # predicted_tags = hmm_model.fit_predict(test_words)
-                    overall_accuracy, known_word_accuracy, novel_word_accuracy = (
-                        hmm_model.fit_predict_evaluate(test_words, true_tags)
-                    )
-
-                    # Append results for the current combination of smoothing methods
-                    results.append(
-                        [
-                            emission_smoothing,
-                            f"{transition_smoothing} (λ={lambda_value:.2f})",
-                            overall_accuracy,
-                            known_word_accuracy,
-                            novel_word_accuracy,
-                        ]
-                    )
-            else:
-                print(
-                    f"Emission Smoothing: {emission_smoothing}, Transition Smoothing: {transition_smoothing}"
-                )
-                hmm_model = model(
-                    train_data=train_data_parsed,
-                    emission_smoothing_method=emission_smoothing,
-                    transition_smoothing_method=transition_smoothing,
-                )
-                # predicted_tags = hmm_model.fit_predict(test_words)
-                overall_accuracy, known_word_accuracy, novel_word_accuracy = (
-                    hmm_model.fit_predict_evaluate(test_words, true_tags)
-                )
-
-                # Append results for the current combination of smoothing methods
-                results.append(
-                    [
-                        emission_smoothing,
-                        transition_smoothing,
-                        overall_accuracy,
-                        known_word_accuracy,
-                        novel_word_accuracy,
-                    ]
-                )
-
+def print_results(results):
     # Sort results by novel word accuracy in descending order
-    results.sort(key=lambda x: x[4], reverse=True)
+    results.sort(key=lambda x: x[3], reverse=True)
 
     # Display results in a table
     headers = [
         "Emission Smoothing",
         "Transition Smoothing",
+        "Rare Word Max Frequency",
         "Overall Accuracy",
         "Known Word Accuracy",
         "Novel Word Accuracy",
     ]
     print(
-        f"\n| {headers[0]:<30} | {headers[1]:<40} | {headers[2]:<20} | {headers[3]:<20} | {headers[4]:<20}|"
+        f"\n| {headers[0]:<30} | {headers[1]:<40} | {headers[2]:<25} | {headers[3]:<20} | {headers[4]:<20} | {headers[5]:<20}|"
     )
-    print("=" * 145)
+    print("=" * 175)
     for row in results:
         emission_method = str(row[0]) if row[0] is not None else "None"
         transition_method = str(row[1]) if row[1] is not None else "None"
         print(
-            f"| {emission_method:<30} | {transition_method:<40} | {row[2]:<20.5f} | {row[3]:<20.5f} | {row[4]:<20.5f}|"
+            f"| {emission_method:<30} | {transition_method:<40} | {row[2]:<25} | {row[3]:<20.5f} | {row[4]:<20.5f} | {row[5]:<20.5f}|"
         )
+
+
+def train_and_test(
+    train_data_lines,
+    dev_data_lines,
+    test_data_lines,
+):
+    """
+    Performs training and testing using the provided data lines.
+    """
+    train_data_parsed = parse_data(train_data_lines)
+    dev_data_parsed = parse_data(dev_data_lines)
+
+    dev_words = [word for word, _ in dev_data_parsed]
+    dev_tags = [tag for _, tag in dev_data_parsed]
+
+    model = HMM_Model
+
+    # Define your smoothing methods and other parameters
+    emission_smoothing_methods = [SmoothingMethod.GOOD_TURING, None]
+    transition_smoothing_methods = [
+        SmoothingMethod.LAPLACE,
+        # SmoothingMethod.INTERPOLATED,
+        None,
+    ]
+    lambda_values = np.linspace(0.1, 0.9, 5).tolist()
+    rare_word_max_freq = [1, 2]
+
+    # Initialize a list to store results
+    results = []
+
+    best_model = None
+    best_overall_accuracy = 0.0
+
+    dev_data_lines = None
+    if dev_data_lines:
+        # Perform grid search
+        for emission_smoothing in emission_smoothing_methods:
+            for transition_smoothing in transition_smoothing_methods:
+                for rare_freq in rare_word_max_freq:
+                    if transition_smoothing == SmoothingMethod.INTERPOLATED:
+                        for lambda_value in lambda_values:
+                            # print(
+                            #     f"Emission Smoothing: {emission_smoothing}, Transition Smoothing: {transition_smoothing}, Lambda: {lambda_value}, Rare Freq: {rare_freq}"
+                            # )
+                            hmm_model = model(
+                                train_data=train_data_parsed,
+                                emission_smoothing_method=emission_smoothing,
+                                transition_smoothing_method=transition_smoothing,
+                                lambda_value=lambda_value,
+                                rare_word_max_frequency=rare_freq,
+                            )
+                            (
+                                overall_accuracy,
+                                known_word_accuracy,
+                                novel_word_accuracy,
+                            ) = hmm_model.fit_predict_evaluate(dev_words, dev_tags)
+
+                            # Append results for the current combination of smoothing methods
+                            results.append(
+                                [
+                                    emission_smoothing,
+                                    f"{transition_smoothing} (λ={lambda_value:.2f})",
+                                    rare_freq,
+                                    overall_accuracy,
+                                    known_word_accuracy,
+                                    novel_word_accuracy,
+                                ]
+                            )
+
+                            # Update best model if current overall accuracy is higher
+                            if overall_accuracy > best_overall_accuracy:
+                                best_overall_accuracy = overall_accuracy
+                                best_model = hmm_model
+                    else:
+                        # print(
+                        #     f"Emission Smoothing: {emission_smoothing}, Transition Smoothing: {transition_smoothing}, Rare Freq: {rare_freq}"
+                        # )
+                        hmm_model = model(
+                            train_data=train_data_parsed,
+                            emission_smoothing_method=emission_smoothing,
+                            transition_smoothing_method=transition_smoothing,
+                            rare_word_max_frequency=rare_freq,
+                        )
+                        overall_accuracy, known_word_accuracy, novel_word_accuracy = (
+                            hmm_model.fit_predict_evaluate(dev_words, dev_tags)
+                        )
+
+                        # Append results for the current combination of smoothing methods
+                        results.append(
+                            [
+                                emission_smoothing,
+                                transition_smoothing,
+                                rare_freq,
+                                overall_accuracy,
+                                known_word_accuracy,
+                                novel_word_accuracy,
+                            ]
+                        )
+
+                        # Update best model if current overall accuracy is higher
+                        if overall_accuracy > best_overall_accuracy:
+                            best_overall_accuracy = overall_accuracy
+                            best_model = hmm_model
+
+        print_results(results)
+
+    if len(dev_data_parsed) > 0:
+        train_data_parsed = train_data_parsed + dev_data_parsed
+
+    if best_model is None:
+        best_model = model(
+            train_data=train_data_parsed,
+            emission_smoothing_method=None,
+            transition_smoothing_method=None,
+            rare_word_max_frequency=1,
+        )
+    else:
+        # Train the best model on the combined train and dev data
+        best_model.train_data = train_data_parsed
+
+    best_model.fit()
+    # print(best_model.fit_predict_evaluate(test_words=dev_words, true_tags=dev_tags))
+
+    test_words = parse_data(test_data_lines)
+    test_predictions = best_model.predict(test_words)
+
+    # Open the file for writing
+    with open("output.txt", "w") as file:
+        # Iterate over each sentence in the test data
+        for word, tag in zip(test_words, test_predictions):
+            # Format as word/tag
+            file.write(f"{word}/{tag}\n")
 
 
 def main():
@@ -712,6 +872,7 @@ def main():
     path = "data"
 
     train_file = os.path.join(path, train_base)
+    dev_file = os.path.join(path, "endev")
     test_file = os.path.join(path, test_base)
 
     # print the arguments to verify
@@ -719,12 +880,17 @@ def main():
     print(f"Test file: {test_file}")
 
     train_data = read_data_file(train_file)
+    dev_data = read_data_file(dev_file)
     test_data = read_data_file(test_file)
 
     if (train_base == "ictrain" and test_base == "ictest") or (train_base == "entrain"):
-        train_and_test(train_data_lines=train_data, test_data_lines=test_data)
+        train_and_test(
+            train_data_lines=train_data,
+            dev_data_lines=dev_data,
+            test_data_lines=test_data,
+        )
     else:
-        print("Error: Could not load training and/or testing data. Exiting.")
+        raise ValueError("Error: Could not load training and/or testing data. Exiting.")
 
 
 if __name__ == "__main__":

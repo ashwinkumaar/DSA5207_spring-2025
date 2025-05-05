@@ -5,7 +5,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from enum import Enum
-import argparse
+# import argparse
 
 import numpy as np
 
@@ -194,7 +194,8 @@ class HMM_Model(Model):
         train_data,
         emission_smoothing_method: SmoothingMethod = None,
         transition_smoothing_method: SmoothingMethod = None,
-        lambda_value: float = 0.7,
+        lambda_emission: float = 0.7,
+        lambda_transition: float = 0.7,
         n_lines_debug_print: int = None,
         rare_word_max_frequency: int = 0,
     ):
@@ -209,7 +210,8 @@ class HMM_Model(Model):
         self.rare_word_max_frequency = rare_word_max_frequency
         self.emission_smoothing_method = emission_smoothing_method
         self.transition_smoothing_method = transition_smoothing_method
-        self.lambda_value = lambda_value
+        self.lambda_emission = lambda_emission
+        self.lambda_transition = lambda_transition
         self.word_tag_counts, self.tag_counts, self.tag_tag_counts = (
             self._compute_counts()
         )
@@ -322,7 +324,7 @@ class HMM_Model(Model):
                 )
         return emission_probs
 
-    def _compute_emission_probs_interpolated(self, lambda_value):
+    def _compute_emission_probs_interpolated(self, lambda_emission):
         """Computes emission probabilities with interpolated smoothing."""
         emission_probs = {}
         total_words = sum(self.tag_counts.values())
@@ -331,8 +333,8 @@ class HMM_Model(Model):
             for tag, count in tags.items():
                 unigram_prob = log2(self.tag_counts[tag]) - log2(total_words)
                 emission_probs[word][tag] = log2(
-                    (lambda_value * (2 ** (log2(count) - log2(self.tag_counts[tag]))))
-                    + ((1 - lambda_value) * (2**unigram_prob))
+                    (lambda_emission * (2 ** (log2(count) - log2(self.tag_counts[tag]))))
+                    + ((1 - lambda_emission) * (2**unigram_prob))
                 )
         return emission_probs
 
@@ -358,7 +360,7 @@ class HMM_Model(Model):
             return self._compute_emission_probs_good_turing()
         elif method == SmoothingMethod.INTERPOLATED:
             return self._compute_emission_probs_interpolated(
-                lambda_value=self.lambda_value
+                lambda_emission=self.lambda_emission
             )
 
         return self._compute_emission_probs_base()
@@ -380,7 +382,7 @@ class HMM_Model(Model):
 
         return transition_probs
 
-    def _compute_transition_probs_interpolated(self, lambda_value):
+    def _compute_transition_probs_interpolated(self, lambda_transition):
         """Computes transition probabilities with interpolated smoothing."""
         transition_probs = {}
         total_tags = sum(self.tag_counts.values())
@@ -394,8 +396,8 @@ class HMM_Model(Model):
 
                 unigram_prob = log2(self.tag_counts[next_tag]) - log2(total_tags)
                 transition_probs[prev_tag][next_tag] = log2(
-                    (lambda_value * (2**bigram_prob))
-                    + ((1 - lambda_value) * (2**unigram_prob))
+                    (lambda_transition * (2**bigram_prob))
+                    + ((1 - lambda_transition) * (2**unigram_prob))
                 )
 
             # for next_tag, count in next_tags.items():
@@ -428,7 +430,7 @@ class HMM_Model(Model):
             return self._compute_transition_probs_laplace()
         elif method == SmoothingMethod.INTERPOLATED:
             return self._compute_transition_probs_interpolated(
-                lambda_value=self.lambda_value
+                lambda_transition=self.lambda_transition
             )
 
         return self._compute_transition_probs_base()
@@ -574,14 +576,16 @@ class HMM_Bigram_Model(HMM_Model):
         train_data,
         emission_smoothing_method=None,
         transition_smoothing_method=None,
-        lambda_value=0.7,
+        lambda_emission=0.7,
+        lambda_transition=0.7,
         n_lines_debug_print=None,
     ):
         super().__init__(
             train_data,
             emission_smoothing_method,
             transition_smoothing_method,
-            lambda_value,
+            lambda_emission,
+            lambda_transition,
             n_lines_debug_print,
         )
         self.bigram_counts = self._compute_bigram_counts()
@@ -637,8 +641,8 @@ class HMM_Bigram_Model(HMM_Model):
                 )
                 unigram_prob = self.tag_counts[next_tag] / total_tags
                 bigram_probs[prev_tag][next_tag] = (
-                    self.lambda_value * bigram_prob
-                    + (1 - self.lambda_value) * unigram_prob
+                    self.lambda_emission * bigram_prob
+                    + (1 - self.lambda_emission) * unigram_prob
                 )
 
         return bigram_probs
@@ -750,10 +754,16 @@ def train_and_test(
     model = HMM_Model
 
     # Define your smoothing methods and other parameters
-    emission_smoothing_methods = [SmoothingMethod.GOOD_TURING, None]
+    emission_smoothing_methods = [
+        SmoothingMethod.GOOD_TURING,
+        SmoothingMethod.INTERPOLATED,
+        SmoothingMethod.LAPLACE,
+        SmoothingMethod.WRITTEN_BELL,
+        None
+    ]
     transition_smoothing_methods = [
         SmoothingMethod.LAPLACE,
-        # SmoothingMethod.INTERPOLATED,
+        SmoothingMethod.INTERPOLATED,
         None,
     ]
     lambda_values = np.linspace(0.1, 0.9, 5).tolist()
@@ -765,80 +775,122 @@ def train_and_test(
     best_model = None
     best_overall_accuracy = 0.0
 
-    dev_data_lines = None
+    # dev_data_lines = None
     if dev_data_lines:
-        # Perform grid search
         for emission_smoothing in emission_smoothing_methods:
             for transition_smoothing in transition_smoothing_methods:
                 for rare_freq in rare_word_max_freq:
-                    if transition_smoothing == SmoothingMethod.INTERPOLATED:
-                        for lambda_value in lambda_values:
-                            # print(
-                            #     f"Emission Smoothing: {emission_smoothing}, Transition Smoothing: {transition_smoothing}, Lambda: {lambda_value}, Rare Freq: {rare_freq}"
-                            # )
-                            hmm_model = model(
-                                train_data=train_data_parsed,
-                                emission_smoothing_method=emission_smoothing,
-                                transition_smoothing_method=transition_smoothing,
-                                lambda_value=lambda_value,
-                                rare_word_max_frequency=rare_freq,
-                            )
-                            (
-                                overall_accuracy,
-                                known_word_accuracy,
-                                novel_word_accuracy,
-                            ) = hmm_model.fit_predict_evaluate(dev_words, dev_tags)
+                    if emission_smoothing == SmoothingMethod.INTERPOLATED and transition_smoothing == SmoothingMethod.INTERPOLATED:
+                        for lambda_emission in lambda_values:
+                            for lambda_transition in lambda_values:
+                                print(f"Training model with: Emission={emission_smoothing} (λ={lambda_emission:.2f}), "
+                                      f"Transition={transition_smoothing} (λ={lambda_transition:.2f}), Rare Freq={rare_freq}")
+                                hmm_model = model(
+                                    train_data=train_data_parsed,
+                                    emission_smoothing_method=emission_smoothing,
+                                    transition_smoothing_method=transition_smoothing,
+                                    lambda_emission=lambda_emission,
+                                    lambda_transition=lambda_transition,
+                                    rare_word_max_frequency=rare_freq,
+                                )
+                                overall_accuracy, known_word_accuracy, novel_word_accuracy = hmm_model.fit_predict_evaluate(
+                                    dev_words, dev_tags)
 
-                            # Append results for the current combination of smoothing methods
-                            results.append(
-                                [
-                                    emission_smoothing,
-                                    f"{transition_smoothing} (λ={lambda_value:.2f})",
+                                results.append([
+                                    f"{emission_smoothing} (λ={lambda_emission:.2f})",
+                                    f"{transition_smoothing} (λ={lambda_transition:.2f})",
                                     rare_freq,
                                     overall_accuracy,
                                     known_word_accuracy,
                                     novel_word_accuracy,
-                                ]
-                            )
+                                ])
 
-                            # Update best model if current overall accuracy is higher
+                                if overall_accuracy > best_overall_accuracy:
+                                    best_overall_accuracy = overall_accuracy
+                                    best_model = hmm_model
+
+                    elif emission_smoothing == SmoothingMethod.INTERPOLATED:
+                        for lambda_emission in lambda_values:
+                            print(f"Training model with: Emission={emission_smoothing} (λ={lambda_emission:.2f}), "
+                                  f"Transition={transition_smoothing}, Rare Freq={rare_freq}")
+                            hmm_model = model(
+                                train_data=train_data_parsed,
+                                emission_smoothing_method=emission_smoothing,
+                                transition_smoothing_method=transition_smoothing,
+                                lambda_emission=lambda_emission,
+                                rare_word_max_frequency=rare_freq,
+                            )
+                            overall_accuracy, known_word_accuracy, novel_word_accuracy = hmm_model.fit_predict_evaluate(
+                                dev_words, dev_tags)
+
+                            results.append([
+                                f"{emission_smoothing} (λ={lambda_emission:.2f})",
+                                transition_smoothing,
+                                rare_freq,
+                                overall_accuracy,
+                                known_word_accuracy,
+                                novel_word_accuracy,
+                            ])
+
                             if overall_accuracy > best_overall_accuracy:
                                 best_overall_accuracy = overall_accuracy
                                 best_model = hmm_model
+
+                    elif transition_smoothing == SmoothingMethod.INTERPOLATED:
+                        for lambda_transition in lambda_values:
+                            print(f"Training model with: Emission={emission_smoothing}, "
+                                  f"Transition={transition_smoothing} (λ={lambda_transition:.2f}), Rare Freq={rare_freq}")
+                            hmm_model = model(
+                                train_data=train_data_parsed,
+                                emission_smoothing_method=emission_smoothing,
+                                transition_smoothing_method=transition_smoothing,
+                                lambda_transition=lambda_transition,
+                                rare_word_max_frequency=rare_freq,
+                            )
+                            overall_accuracy, known_word_accuracy, novel_word_accuracy = hmm_model.fit_predict_evaluate(
+                                dev_words, dev_tags)
+
+                            results.append([
+                                emission_smoothing,
+                                f"{transition_smoothing} (λ={lambda_transition:.2f})",
+                                rare_freq,
+                                overall_accuracy,
+                                known_word_accuracy,
+                                novel_word_accuracy,
+                            ])
+
+                            if overall_accuracy > best_overall_accuracy:
+                                best_overall_accuracy = overall_accuracy
+                                best_model = hmm_model
+
                     else:
-                        # print(
-                        #     f"Emission Smoothing: {emission_smoothing}, Transition Smoothing: {transition_smoothing}, Rare Freq: {rare_freq}"
-                        # )
+                        print(f"Training model with: Emission={emission_smoothing}, Transition={transition_smoothing}, "
+                              f"Rare Freq={rare_freq}")
                         hmm_model = model(
                             train_data=train_data_parsed,
                             emission_smoothing_method=emission_smoothing,
                             transition_smoothing_method=transition_smoothing,
                             rare_word_max_frequency=rare_freq,
                         )
-                        overall_accuracy, known_word_accuracy, novel_word_accuracy = (
-                            hmm_model.fit_predict_evaluate(dev_words, dev_tags)
-                        )
+                        overall_accuracy, known_word_accuracy, novel_word_accuracy = hmm_model.fit_predict_evaluate(
+                            dev_words, dev_tags)
 
-                        # Append results for the current combination of smoothing methods
-                        results.append(
-                            [
-                                emission_smoothing,
-                                transition_smoothing,
-                                rare_freq,
-                                overall_accuracy,
-                                known_word_accuracy,
-                                novel_word_accuracy,
-                            ]
-                        )
+                        results.append([
+                            emission_smoothing,
+                            transition_smoothing,
+                            rare_freq,
+                            overall_accuracy,
+                            known_word_accuracy,
+                            novel_word_accuracy,
+                        ])
 
-                        # Update best model if current overall accuracy is higher
                         if overall_accuracy > best_overall_accuracy:
                             best_overall_accuracy = overall_accuracy
                             best_model = hmm_model
 
         print_results(results)
 
-    if len(dev_data_parsed) > 0 and dev_data_parsed[0][0] is not None:
+    if len(dev_data_parsed) > 0 and dev_data_parsed is not [(None, None)]:
         train_data_parsed = train_data_parsed + dev_data_parsed
 
     if best_model is None:
@@ -854,12 +906,13 @@ def train_and_test(
             train_data=train_data_parsed,
             emission_smoothing_method=best_model.emission_smoothing_method,
             transition_smoothing_method=best_model.transition_smoothing_method,
-            lambda_value=best_model.lambda_value,
+            lambda_emission=best_model.lambda_emission,
+            lambda_transition=best_model.lambda_transition,
             rare_word_max_frequency=best_model.rare_word_max_frequency
         )
 
-    best_model_final.fit()
-    # print(best_model.fit_predict_evaluate(test_words=dev_words, true_tags=dev_tags))
+    # best_model_final.fit()
+    print(best_model_final.fit_predict_evaluate(test_words=dev_words, true_tags=dev_tags))
 
     test_words = parse_data(test_data_lines, is_test=True)
     test_predictions = best_model_final.predict(test_words)
